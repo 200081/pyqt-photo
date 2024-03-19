@@ -1,4 +1,4 @@
-#尝试加入截取目标的代码
+#完成加入截取目标、目标分类存放的代码
 import os
 import sys
 from pathlib import Path
@@ -38,6 +38,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.out = None
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.half = False
+        self.button_pressed = False
 
         name = 'exp'
         save_file = ROOT / 'result'
@@ -188,6 +189,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.timer_video.timeout.connect(self.show_video_frame)
         #下面这是显示图片的按钮pushButton_1信号与槽
         self.pushButton_1.clicked.connect(self.display)
+        self.pushButton_3.clicked.connect(self.on_button_clicked)
 
 
     def init_logo(self):
@@ -231,6 +233,8 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         flag, img = self.cap.read()
         if img is not None:
             showimg = img
+            #showimg_1的作用就是复制原始img图像，供下面进行目标截取
+            showimg_1 = img.copy()
             with torch.no_grad():
                 img = letterbox(img, new_shape=self.imgsz)[0]
                 # Convert
@@ -262,13 +266,12 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                                 xyxy, showimg, label=label, color=self.colors[int(cls)], line_thickness=2)
 
                         #这是图片目标截取的代码
-                        k = cv2.waitKey(1) & 0xFF
-                        if k == ord('s'):  # 如果按下's'键
+                        if self.button_pressed:
                             print("开始截取")
+                            self.button_pressed = False
                             for *xyxy, conf, cls in reversed(det):
                                 c = int(cls)
-                                #save_one_box(xyxy, showimg, file=ROOT / 'result' / 'crops' / name_list[c] / f'{p.stem}.jpg', BGR=True)
-                                save_one_box(xyxy, img, file=self.save_file, BGR=True)
+                                save_one_box(xyxy, showimg_1, file=ROOT / 'result' / 'crops' / self.names[c] / f'{i}.jpg', BGR=True)
                             print("截取成功")
 
             self.out.write(showimg)
@@ -287,8 +290,16 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             self.init_logo()
 
 
+    #这是“截取目标”按钮按下时改变变量的值
+    def on_button_clicked(self):
+        self.button_pressed = True # 设置标志变量为 True
+
+
     #下面是图片显示功能的函数
     def display(self):
+        #这是提前将显示界面进行清空。防止出现按多次按钮后出现图片重复的现象
+        self.listWidgetImages.clear()
+
         self.listWidgetImages.setViewMode(QListView.IconMode)
         self.listWidgetImages.setModelColumn(1)  # 如果使用模型，确保列设置正确
         self.listWidgetImages.itemSelectionChanged.connect(self.onItemSelectionChanged)
@@ -297,7 +308,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.slider.valueChanged.connect(self.onSliderPosChanged)
 
         # 替换为你想要显示图片的文件夹路径
-        image_folder_path = 'E:/yolov5-70--py-qt5-master/blot'
+        image_folder_path = 'E:/yolov5-70--py-qt5-master/result/crops/blot'
 
         # 遍历文件夹中的所有文件
         for filename in os.listdir(image_folder_path):
