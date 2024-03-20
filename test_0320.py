@@ -1,0 +1,477 @@
+#3月20日志：加上了显示”螺栓“”裂缝“的按钮、接入了opencv检测代码并输出不同颜色的信息到状态信息栏
+import os
+import sys
+from pathlib import Path
+import cv2
+import random
+import torch
+import numpy as np
+import torch.backends.cudnn as cudnn
+import qdarkstyle
+from PyQt5 import QtCore, QtGui, QtWidgets
+from utils.general import check_img_size, non_max_suppression, scale_boxes, increment_path
+from utils.augmentations import letterbox
+from utils.plots import plot_one_box, save_one_box
+from models.common import DetectMultiBackend
+#下面是图片显示引用的库
+from PyQt5.QtWidgets import QListWidgetItem, QListView
+from PyQt5.QtGui import QImage, QPixmap, QIcon
+from PyQt5.QtCore import Qt, QSize
+FrameIdxRole = Qt.UserRole + 1
+
+
+FILE = Path(__file__).resolve()
+ROOT = FILE.parents[0]  # YOLOv5 root directory
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))  # add ROOT to PATH
+ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
+
+
+class Ui_MainWindow(QtWidgets.QMainWindow):
+    def __init__(self, parent=None):
+        super(Ui_MainWindow, self).__init__(parent)
+        self.timer_video = QtCore.QTimer()
+        self.setupUi(self)
+        self.init_logo()
+        self.init_slots()
+        self.cap = cv2.VideoCapture()
+        self.out = None
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.half = False
+        self.button_pressed = False
+
+        name = 'exp'
+        save_file = ROOT / 'result'
+        self.save_file = increment_path(Path(save_file) / name, exist_ok=False, mkdir=True)
+
+        cudnn.benchmark = True
+        weights = 'weights/best.pt'   # 模型加载路径
+        imgsz = 640  # 预测图尺寸大小
+        self.conf_thres = 0.5  # NMS置信度
+        self.iou_thres = 0.45  # IOU阈值
+
+        # 载入模型
+        self.model = DetectMultiBackend(weights, device=self.device)
+        stride = self.model.stride
+        self.imgsz = check_img_size(imgsz, s=stride)
+        if self.half:
+            self.model.half()  # to FP16
+
+        # 从模型中获取各类别名称
+        self.names = self.model.names
+        # 给每一个类别初始化颜色
+        self.colors = [[random.randint(0, 255) for _ in range(3)] for _ in self.names]
+
+
+    def setupUi(self, MainWindow):
+        MainWindow.setObjectName("MainWindow")
+        MainWindow.resize(1122, 749)
+        self.centralwidget = QtWidgets.QWidget(MainWindow)
+        self.centralwidget.setObjectName("centralwidget")
+        self.layoutWidget = QtWidgets.QWidget(self.centralwidget)
+        self.layoutWidget.setGeometry(QtCore.QRect(30, 20, 1061, 691))
+        self.layoutWidget.setObjectName("layoutWidget")
+        self.gridLayout_mainwindow = QtWidgets.QGridLayout(self.layoutWidget)
+        self.gridLayout_mainwindow.setContentsMargins(0, 0, 0, 0)
+        self.gridLayout_mainwindow.setObjectName("gridLayout_mainwindow")
+        self.frame_1 = QtWidgets.QFrame(self.layoutWidget)
+        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy.setHorizontalStretch(6)
+        sizePolicy.setVerticalStretch(7)
+        sizePolicy.setHeightForWidth(self.frame_1.sizePolicy().hasHeightForWidth())
+        self.frame_1.setSizePolicy(sizePolicy)
+        self.frame_1.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.frame_1.setFrameShadow(QtWidgets.QFrame.Raised)
+        self.frame_1.setObjectName("frame_1")
+        self.label_1 = QtWidgets.QLabel(self.frame_1)
+        self.label_1.setGeometry(QtCore.QRect(10, 10, 681, 461))
+        self.label_1.setStyleSheet("background-color: rgb(0, 0, 0);")
+        self.label_1.setTextFormat(QtCore.Qt.AutoText)
+        self.label_1.setObjectName("label_1")
+        self.gridLayout_mainwindow.addWidget(self.frame_1, 0, 0, 1, 1)
+
+        # 创建frame_2并设置其基本属性（图片显示功能GUI）
+        self.frame_2 = QtWidgets.QFrame(MainWindow)
+        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy.setHorizontalStretch(3)
+        sizePolicy.setVerticalStretch(0)
+        sizePolicy.setHeightForWidth(self.frame_2.sizePolicy().hasHeightForWidth())
+        self.frame_2.setSizePolicy(sizePolicy)
+        self.frame_2.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.frame_2.setFrameShadow(QtWidgets.QFrame.Raised)
+        self.frame_2.setObjectName("frame_2")
+        # 创建slider, listWidget, pushButton
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.listWidgetImages = QtWidgets.QListWidget()
+        self.listWidgetImages.setDragEnabled(True)
+        self.listWidgetImages.setMovement(QtWidgets.QListView.Static)
+        self.listWidgetImages.setFlow(QtWidgets.QListView.LeftToRight)
+        self.listWidgetImages.setResizeMode(QtWidgets.QListView.Adjust)
+        self.listWidgetImages.setViewMode(QtWidgets.QListView.IconMode)
+        self.listWidgetImages.setModelColumn(0)
+        self.listWidgetImages.setObjectName("listWidgetImages")
+        # 创建第一个按钮
+        self.pushButton_1 = QtWidgets.QPushButton("螺栓")
+        # 创建第二个按钮
+        self.pushButton_12 = QtWidgets.QPushButton("裂缝")
+        # 创建一个水平布局
+        horizontal_layout = QtWidgets.QHBoxLayout()
+        # 将两个按钮添加到水平布局中
+        horizontal_layout.addWidget(self.pushButton_1)
+        horizontal_layout.addWidget(self.pushButton_12)
+        # 创建垂直布局
+        verticalLayout = QtWidgets.QVBoxLayout()
+        # 将组件添加到垂直布局中
+        verticalLayout.addWidget(self.slider)
+        verticalLayout.addWidget(self.listWidgetImages)
+        verticalLayout.addWidget(self.pushButton_1)
+        verticalLayout.addWidget(self.pushButton_12)
+        # 将垂直布局设置到frame_2中
+        self.frame_2.setLayout(verticalLayout)
+        # 将frame_2添加到gridLayout_mainwindow中
+        self.gridLayout_mainwindow.addWidget(self.frame_2, 0, 1, 1, 1)
+
+        self.frame_3 = QtWidgets.QFrame(self.layoutWidget)
+        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy.setHorizontalStretch(0)
+        sizePolicy.setVerticalStretch(3)
+        sizePolicy.setHeightForWidth(self.frame_3.sizePolicy().hasHeightForWidth())
+        self.frame_3.setSizePolicy(sizePolicy)
+        self.frame_3.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.frame_3.setFrameShadow(QtWidgets.QFrame.Raised)
+        self.frame_3.setObjectName("frame_3")
+        self.label_3 = QtWidgets.QLabel(self.frame_3)
+        self.label_3.setGeometry(QtCore.QRect(10, 180, 271, 21))
+        self.label_3.setObjectName("label_3")
+        self.layoutWidget1 = QtWidgets.QWidget(self.frame_3)
+        self.layoutWidget1.setGeometry(QtCore.QRect(20, 10, 311, 101))
+        self.layoutWidget1.setObjectName("layoutWidget1")
+        self.gridLayout_button = QtWidgets.QGridLayout(self.layoutWidget1)
+        self.gridLayout_button.setContentsMargins(0, 0, 0, 0)
+        self.gridLayout_button.setObjectName("gridLayout_button")
+        self.pushButton = QtWidgets.QPushButton(self.layoutWidget1)
+        self.pushButton.setObjectName("pushButton")
+        self.gridLayout_button.addWidget(self.pushButton, 0, 0, 1, 1)
+        self.pushButton_2 = QtWidgets.QPushButton(self.layoutWidget1)
+        self.pushButton_2.setObjectName("pushButton_2")
+        self.gridLayout_button.addWidget(self.pushButton_2, 0, 1, 1, 1)
+        self.pushButton_3 = QtWidgets.QPushButton(self.layoutWidget1)
+        self.pushButton_3.setObjectName("pushButton_3")
+        self.gridLayout_button.addWidget(self.pushButton_3, 1, 0, 1, 1)
+        self.pushButton_4 = QtWidgets.QPushButton(self.layoutWidget1)
+        self.pushButton_4.setObjectName("pushButton_4")
+        self.gridLayout_button.addWidget(self.pushButton_4, 1, 1, 1, 1)
+        self.gridLayout_mainwindow.addWidget(self.frame_3, 1, 0, 1, 1)
+
+        #这是状态信息栏的布局代码
+        self.frame_4 = QtWidgets.QFrame(self.centralWidget())
+        self.frame_4.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.frame_4.setFrameShadow(QtWidgets.QFrame.Raised)
+        self.frame_4.setObjectName("frame_4")
+        self.textEdit = QtWidgets.QTextEdit(self.frame_4)
+        self.textEdit.setGeometry(QtCore.QRect(10, 10, 331, 181))  # 假设的尺寸
+        self.textEdit.setReadOnly(True)  # 如果不需要用户编辑文本，则设置为只读
+        self.gridLayout_mainwindow.addWidget(self.frame_4, 1, 1, 1, 1)
+
+        MainWindow.setCentralWidget(self.centralwidget)
+        self.statusbar = QtWidgets.QStatusBar(MainWindow)
+        self.statusbar.setObjectName("statusbar")
+        MainWindow.setStatusBar(self.statusbar)
+
+        self.retranslateUi(MainWindow)
+        QtCore.QMetaObject.connectSlotsByName(MainWindow)
+
+    def retranslateUi(self, MainWindow):
+        _translate = QtCore.QCoreApplication.translate
+        MainWindow.setWindowTitle(_translate("MainWindow", "dome_test0226"))
+        self.label_1.setText(_translate("MainWindow", "TextLabel"))
+        #self.label_2.setText(_translate("MainWindow", "TextLabel"))
+        self.label_3.setText(_translate("MainWindow",
+                                        "<html><head/><body><p><span style=\" font-size:11pt; font-weight:600;\">测控20-3 陈锐涛 20034500328</span></p></body></html>"))
+        self.pushButton.setText(_translate("MainWindow", "开启YOLOv5"))
+        self.pushButton_2.setText(_translate("MainWindow", "关闭YOLOv5"))
+        self.pushButton_3.setText(_translate("MainWindow", "截取目标"))
+        self.pushButton_4.setText(_translate("MainWindow", "OpenCV检测"))
+
+    def init_slots(self):
+        self.pushButton.clicked.connect(self.button_camera_open)
+        self.pushButton_2.clicked.connect(self.button_camera_close)
+        self.timer_video.timeout.connect(self.show_video_frame)
+        #下面这个是显示图片的按钮pushButton_1信号与槽
+        self.pushButton_1.clicked.connect(self.display_blot)
+        self.pushButton_12.clicked.connect(self.display_crack)
+        #下面这个是截取目标的按钮
+        self.pushButton_3.clicked.connect(self.on_button_clicked)
+        #self.pushButton_4.clicked.connect(self.statusBar_button)
+        #下面这是opencv检测的按钮
+        self.pushButton_4.clicked.connect(self.opencv_detect)
+
+    #这是opencv检测的函数
+    def opencv_detect(self):
+        folder_path = "E:/yolov5-70--py-qt5-master/result/crops/blot"  # 替换为你的图片文件夹路径
+
+        # 遍历文件夹中的所有文件
+        for filename in os.listdir(folder_path):
+            # 构造完整的文件路径
+            file_path = os.path.join(folder_path, filename)
+            # 读取图片
+            img1 = cv2.imread(file_path)
+            img3 = cv2.resize(img1, (210, 190))
+
+            # hsv通道分离，取出红色部分
+            img_hsv = cv2.cvtColor(img3, cv2.COLOR_BGR2HSV)
+            lower_reg = np.array([0, 100, 100])
+            upper_reg = np.array([10, 255, 255])
+            mask = cv2.inRange(img_hsv, lower_reg, upper_reg)
+            kernel = np.ones((1, 1), np.uint8)
+
+            # 对得到的图像进行形态学操作（闭运算和开运算）
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)  # 开运算：表示先进行膨胀操作，再进行腐蚀操作
+            kernel = np.ones((5, 5), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)  # 闭运算：表示先进行膨胀操作，再进行腐蚀操作
+            res = cv2.bitwise_and(img3, img3, mask=mask)
+
+            # 二值化处理，轮廓检测绘制
+            ret, binary = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+            contours, hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            # 计算每个轮廓的面积
+            contour_areas = [cv2.contourArea(contour) for contour in contours]
+            # 对轮廓和它们的面积进行排序
+            # sorted_contours = [contour for _, contour in sorted(zip(contour_areas, contours), reverse=True)]
+            sorted_contours = [contours[i] for i in
+                               sorted(range(len(contours)), key=lambda k: contour_areas[k], reverse=True)]
+            # 只保留前两个最大的轮廓
+            top_contours = sorted_contours[:2]
+            cv2.drawContours(res, top_contours, -1, (0, 255, 0), 1)
+
+            # 近似操作，用绿线进行拟合
+            angle_list = []
+            length = len(top_contours)
+            for i in range(length):
+                cnts = top_contours[i]
+                epsilon = 0.2 * cv2.arcLength(top_contours[i], True)  # 得到轮廓的周长，精度为0.1*周长
+                approx = cv2.approxPolyDP(cnts, epsilon, True)  # epsilon越大，近似后多边形顶点越少
+                cv2.polylines(img3, [approx], True, (0, 255, 0), 2)
+
+                # 使用 cv2.fitLine() 函数拟合直线
+                [vx, vy, x0, y0] = cv2.fitLine(approx, cv2.DIST_L2, 0, 0.01, 0.01)
+                # 计算直线的斜率和角度
+                if vy != 0:  # 防止除以零的错误
+                    slope = -vy / vx  # 计算斜率
+                    angle = np.arctan(slope) * 57.29577  # 将弧度转换为角度
+                else:
+                    angle = 90  # 如果vy为0，直线是垂直的
+                # 将angle的值添加进angle列表里
+                angle_list.append(angle)
+            if angle_list[0] - 10 <= angle_list[1] <= angle_list[0] + 10:
+                self.textEdit.insertHtml('<br></br><span style="color:green;">"安全""</span><br>')
+                # 显示绿框
+                green_border = cv2.copyMakeBorder(img3, 10, 10, 10, 10, cv2.BORDER_CONSTANT,
+                                                  value=[0, 255, 0])  # 绿色边框的RGB值为[0, 255, 0]
+                cv2.imwrite(file_path, green_border)
+            else:
+                self.textEdit.insertHtml('<br></br><span style="color:red;">《《《螺栓存在松动，请及时处理》》》</span><br>')
+                # 显示红框
+                red_border = cv2.copyMakeBorder(img3, 10, 10, 10, 10, cv2.BORDER_CONSTANT,
+                                                value=[0, 0, 255])  # 红色边框的RGB值为[0, 255, 0]
+                cv2.imwrite(file_path, red_border)
+
+
+    def init_logo(self):
+        pix = QtGui.QPixmap('')   # 绘制初始化图片
+        self.label_1.setScaledContents(True)
+        self.label_1.setPixmap(pix)
+
+    # 退出提示
+    def closeEvent(self, event):
+        reply = QtWidgets.QMessageBox.question(self, 'Message',
+                                               "Are you sure to quit?", QtWidgets.QMessageBox.Yes |
+                                               QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+        if reply == QtWidgets.QMessageBox.Yes:
+            event.accept()
+        else:
+            event.ignore()
+
+    def button_camera_open(self):
+        #self.textEdit.insertHtml('<br><span style="color:green;">摄像头打开成功</span>')
+        self.textEdit.append('摄像头打开成功')
+        if not self.timer_video.isActive():
+            # 默认使用第一个本地camera
+            flag = self.cap.open(0)
+            if flag == False:
+                QtWidgets.QMessageBox.warning(
+                    self, u"Warning", u"打开摄像头失败", buttons=QtWidgets.QMessageBox.Ok, defaultButton=QtWidgets.QMessageBox.Ok)
+            else:
+                self.out = cv2.VideoWriter(str(Path(self.save_file / 'camera_prediction.avi')), cv2.VideoWriter_fourcc(
+                    *'MJPG'), 20, (int(self.cap.get(3)), int(self.cap.get(4))))
+                self.timer_video.start(30)
+
+    def button_camera_close(self):
+        #self.textEdit.insertHtml('<br><span style="color:red;">摄像头关闭</span>')
+        self.textEdit.append('摄像头关闭')
+        self.timer_video.stop()
+        self.cap.release()
+        self.out.release()
+        self.label_1.clear()
+        self.init_logo()
+
+    def show_video_frame(self):
+        name_list = []
+
+        flag, img = self.cap.read()
+        if img is not None:
+            showimg = img
+            #showimg_1的作用就是复制原始img图像，供下面进行目标截取
+            showimg_1 = img.copy()
+            with torch.no_grad():
+                img = letterbox(img, new_shape=self.imgsz)[0]
+                # Convert
+                # BGR to RGB, to 3x416x416
+                img = img[:, :, ::-1].transpose(2, 0, 1)
+                img = np.ascontiguousarray(img)
+                img = torch.from_numpy(img).to(self.device)
+                img = img.half() if self.half else img.float()  # uint8 to fp16/32
+                img /= 255.0  # 0 - 255 to 0.0 - 1.0
+                if img.ndimension() == 3:
+                    img = img.unsqueeze(0)
+                # Inference
+                pred = self.model(img)[0]
+
+                # Apply NMS
+                pred = non_max_suppression(pred, self.conf_thres, self.iou_thres)
+                # Process detections
+                for i, det in enumerate(pred):  # detections per image
+                    if det is not None and len(det):
+                        # Rescale boxes from img_size to im0 size
+                        det[:, :4] = scale_boxes(
+                            img.shape[2:], det[:, :4], showimg.shape).round()
+                        # Write results
+                        for *xyxy, conf, cls in reversed(det):
+                            label = '%s %.2f' % (self.names[int(cls)], conf)
+                            name_list.append(self.names[int(cls)])
+                            # print(label)  # 打印各目标+置信度
+                            plot_one_box(
+                                xyxy, showimg, label=label, color=self.colors[int(cls)], line_thickness=2)
+
+                        #这是图片目标截取的代码
+                        if self.button_pressed:
+                            print("开始截取")
+                            self.button_pressed = False
+                            for *xyxy, conf, cls in reversed(det):
+                                c = int(cls)
+                                save_one_box(xyxy, showimg_1, file=ROOT / 'result' / 'crops' / self.names[c] / f'{i}.jpg', BGR=True)
+                            print("截取成功")
+
+            self.out.write(showimg)
+            show = cv2.resize(showimg, (640, 480))
+            self.result = cv2.cvtColor(show, cv2.COLOR_BGR2RGB)
+            showImage = QtGui.QImage(self.result.data, self.result.shape[1], self.result.shape[0],
+                                     QtGui.QImage.Format_RGB888)
+            self.label_1.setPixmap(QtGui.QPixmap.fromImage(showImage))
+
+        else:
+            self.timer_video.stop()
+            self.cap.release()
+            self.out.release()
+            self.label_1.clear()
+            #self.pushButton_camera.setDisabled(False)
+            self.init_logo()
+
+
+    #这是“截取目标”按钮按下时改变变量的值
+    def on_button_clicked(self):
+        self.textEdit.append('目标截取成功')
+        self.button_pressed = True # 设置标志变量为 True
+
+
+    #下面是图片显示功能的函数
+    def display_blot(self):
+        self.textEdit.append('螺栓显示中')
+        #这是提前将显示界面进行清空。防止出现按多次按钮后出现图片重复的现象
+        self.listWidgetImages.clear()
+
+        self.listWidgetImages.setViewMode(QListView.IconMode)
+        self.listWidgetImages.setModelColumn(1)  # 如果使用模型，确保列设置正确
+        self.listWidgetImages.itemSelectionChanged.connect(self.onItemSelectionChanged)
+
+        # slider配置
+        self.slider.valueChanged.connect(self.onSliderPosChanged)
+
+        # 替换为你想要显示图片的文件夹路径
+        image_folder_path = 'E:/yolov5-70--py-qt5-master/result/crops/blot'
+
+        # 遍历文件夹中的所有文件
+        for filename in os.listdir(image_folder_path):
+            # 检查文件是否是图片（这里仅作为示例，可以根据需要添加更多条件）
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+                image_path = os.path.join(image_folder_path, filename)
+                image = cv2.imread(image_path)
+
+                if image is not None:
+                    self.add_image_thumbnail(image, filename, "")
+
+    def display_crack(self):
+        self.textEdit.append('裂缝显示中')
+        #这是提前将显示界面进行清空。防止出现按多次按钮后出现图片重复的现象
+        self.listWidgetImages.clear()
+
+        self.listWidgetImages.setViewMode(QListView.IconMode)
+        self.listWidgetImages.setModelColumn(1)  # 如果使用模型，确保列设置正确
+        self.listWidgetImages.itemSelectionChanged.connect(self.onItemSelectionChanged)
+
+        # slider配置
+        self.slider.valueChanged.connect(self.onSliderPosChanged)
+
+        # 替换为你想要显示图片的文件夹路径
+        image_folder_path = 'E:/yolov5-70--py-qt5-master/result/crops/crack'
+
+        # 遍历文件夹中的所有文件
+        for filename in os.listdir(image_folder_path):
+            # 检查文件是否是图片（这里仅作为示例，可以根据需要添加更多条件）
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+                image_path = os.path.join(image_folder_path, filename)
+                image = cv2.imread(image_path)
+
+                if image is not None:
+                    self.add_image_thumbnail(image, filename, "")
+
+
+    def add_image_thumbnail(self, image, frameIdx, name):
+        self.listWidgetImages.itemSelectionChanged.disconnect(self.onItemSelectionChanged)
+
+        height, width, channels = image.shape
+        bytes_per_line = width * channels
+        qImage = QImage(image.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+        pixmap = QPixmap.fromImage(qImage)
+
+        item = QListWidgetItem(QIcon(pixmap), str(frameIdx) + ": " + name)
+        item.setData(FrameIdxRole, frameIdx)
+
+        self.listWidgetImages.addItem(item)
+
+        self.listWidgetImages.setCurrentRow(self.listWidgetImages.count() - 1)
+
+        self.listWidgetImages.itemSelectionChanged.connect(self.onItemSelectionChanged)
+
+    def onItemSelectionChanged(self):
+        pass
+
+    def onSliderPosChanged(self, value):
+        self.listWidgetImages.setIconSize(QSize(value, value))
+
+
+if __name__ == '__main__':
+    app = QtWidgets.QApplication(sys.argv)
+    app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
+    ui = Ui_MainWindow()
+    # 设置窗口透明度
+    ui.setWindowOpacity(0.93)
+    # 去除顶部边框
+    # ui.setWindowFlags(Qt.FramelessWindowHint)
+    # 设置窗口图标
+    icon = QIcon()
+    icon.addPixmap(QPixmap("./UI/icon.ico"), QIcon.Normal, QIcon.Off)
+    # 设置应用图标
+    ui.setWindowIcon(icon)
+    ui.show()
+    sys.exit(app.exec_())
